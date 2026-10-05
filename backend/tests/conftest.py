@@ -1,4 +1,6 @@
 import os
+from passlib.context import CryptContext
+
 
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
 
