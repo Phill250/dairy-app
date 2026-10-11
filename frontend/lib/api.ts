@@ -10,6 +10,7 @@ export interface UserRead {
   last_name: string;
   email: string;
   role: UserRole;
+  totp_enabled?: boolean;
 }
 
 export interface CowRead {
@@ -62,6 +63,23 @@ export interface MetricsRead {
   average_predicted_yield: number | null;
   ml_model_usage_rate: number;
   status_breakdown: Record<string, number>;
+}
+
+export class AuthError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export type LoginResult =
+  | { status: "ok" }
+  | { status: "mfa_required"; mfaToken: string };
+
+export interface TwoFactorSetup {
+  secret: string;
+  otpauth_uri: string;
 }
 
 
@@ -153,18 +171,42 @@ export async function registerFarmer(payload: {
   });
 }
 
-export async function login(email: string, password: string): Promise<void> {
+export async function login(email: string, password: string): Promise<LoginResult> {
   const res = await fetch(`${API_BASE_URL}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ username: email, password }),
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Login failed: ${body}`);
+  if (!res.ok) throw new AuthError(res.status, "Login failed");
+  const data = await res.json();
+  if (data.mfa_required) {
+    return { status: "mfa_required", mfaToken: data.mfa_token };
   }
+  setTokens(data.access_token, data.refresh_token);
+  return { status: "ok" };
+}
+
+export async function verifyTwoFactor(mfaToken: string, code: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/auth/login/verify-2fa`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mfa_token: mfaToken, code }),
+  });
+  if (!res.ok) throw new AuthError(res.status, "Verification failed");
   const data = await res.json();
   setTokens(data.access_token, data.refresh_token);
+}
+
+export async function startTwoFactorSetup(): Promise<TwoFactorSetup> {
+  return apiFetch<TwoFactorSetup>("/auth/2fa/setup", { method: "POST" });
+}
+
+export async function enableTwoFactor(code: string): Promise<string[]> {
+  const data = await apiFetch<{ recovery_codes: string[] }>("/auth/2fa/enable", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+  return data.recovery_codes;
 }
 
 export async function logout(): Promise<void> {

@@ -24,11 +24,15 @@ export default function AdminPage() {
       router.push("/dashboard");
       return;
     }
+    if (user.totp_enabled === false) {
+      router.push("/admin/security");
+      return;
+    }
     fetchAdminMetrics().then(setMetrics);
     fetchAdminUsers().then(setUsers);
   }, [user, loading, router]);
 
-  if (loading || !user || user.role !== "admin") {
+  if (loading || !user || user.role !== "admin" || user.totp_enabled === false) {
     return <div className="p-6 text-slate-300">Loading...</div>;
   }
 

@@ -1,13 +1,16 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { useRouter } from "next/navigation";
-import { UserRead, getMe, login as apiLogin, logout as apiLogout, getAccessToken } from "@/lib/api";
+import {
+  UserRead, LoginResult, getMe, getAccessToken,
+  login as apiLogin, logout as apiLogout, verifyTwoFactor as apiVerifyTwoFactor,
+} from "@/lib/api";
 
 interface AuthContextValue {
   user: UserRead | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  completeTwoFactor: (mfaToken: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -25,8 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
-      const me = await getMe();
-      setUser(me);
+      setUser(await getMe());
     } catch {
       setUser(null);
     } finally {
@@ -38,8 +40,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refreshUser();
   }, []);
 
-  async function login(email: string, password: string) {
-    await apiLogin(email, password);
+  async function login(email: string, password: string): Promise<LoginResult> {
+    const result = await apiLogin(email, password);
+    if (result.status === "ok") await refreshUser();
+    return result;
+  }
+
+  async function completeTwoFactor(mfaToken: string, code: string) {
+    await apiVerifyTwoFactor(mfaToken, code);
     await refreshUser();
   }
 
@@ -49,7 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, loading, login, completeTwoFactor, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
