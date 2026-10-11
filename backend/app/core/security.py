@@ -77,3 +77,12 @@ def decode_token(token: str) -> dict:
         token, _public_key, algorithms=[settings.jwt_algorithm],
         issuer=settings.jwt_issuer, audience=settings.jwt_audience,
     )
+    
+def create_mfa_token(subject: str) -> str:
+    """Issued after a correct password when 2FA is on. Cannot be used as an access token."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    payload = {
+        "sub": subject, "type": "mfa", "exp": expire, "jti": secrets.token_hex(16),
+        "iss": settings.jwt_issuer, "aud": settings.jwt_audience,
+    }
+    return jwt.encode(payload, _private_key, algorithm=settings.jwt_algorithm)

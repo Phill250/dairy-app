@@ -9,10 +9,11 @@ from app.core.dependencies import require_role
 from app.repository.user_repository import UserRepository
 from app.services.auth_service import AuthService
 from app.schemas.user import (
-    FarmerRegister, AdminRegister, UserRead, Token, RefreshRequest,
+    FarmerRegister, AdminRegister, MfaChallenge, TwoFactorEnable, UserRead, Token, RefreshRequest,
     PasswordResetRequest, PasswordResetConfirm,
 )
 from app.models.user import UserModel, UserRole
+from app.schemas.user import TwoFactorSetupResponse, TwoFactorVerify, RecoveryCodes
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -40,7 +41,7 @@ def register_admin(
     return service.register_admin(user_in)
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Token | MfaChallenge)
 @limiter.limit("5/minute")
 def login(
     request: Request,
@@ -84,3 +85,28 @@ def reset_password(
 ):
     service.reset_password(payload.token, payload.new_password)
     return {"detail": "Password has been reset. Please log in with your new password."}
+@router.post("/login/verify-2fa", response_model=Token)
+@limiter.limit("5/minute")
+def verify_2fa(request: Request, payload: TwoFactorVerify, service: AuthService = Depends(get_auth_service)):
+    return service.complete_2fa_login(payload.mfa_token, payload.code)
+
+
+@router.post("/2fa/setup", response_model=TwoFactorSetupResponse)
+@limiter.limit("10/hour")
+def setup_2fa(
+    request: Request,
+    service: AuthService = Depends(get_auth_service),
+    current_user: UserModel = Depends(require_role(UserRole.admin)),
+):
+    return service.begin_2fa_setup(current_user)
+
+
+@router.post("/2fa/enable", response_model=RecoveryCodes)
+@limiter.limit("10/hour")
+def enable_2fa(
+    request: Request,
+    payload: TwoFactorEnable,
+    service: AuthService = Depends(get_auth_service),
+    current_user: UserModel = Depends(require_role(UserRole.admin)),
+):
+    return {"recovery_codes": service.enable_2fa(current_user, payload.code)}

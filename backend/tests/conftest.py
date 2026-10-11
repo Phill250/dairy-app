@@ -1,8 +1,10 @@
 import os
+from cryptography.fernet import Fernet
 from passlib.context import CryptContext
 
 
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
+os.environ["TOTP_ENCRYPTION_KEY"] = Fernet.generate_key().decode()   # new: must be set before the app is imported
 
 import pytest
 from fastapi.testclient import TestClient

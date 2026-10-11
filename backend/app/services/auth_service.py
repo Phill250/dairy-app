@@ -13,6 +13,9 @@ from app.core.security import (
     create_access_token, create_refresh_token, hash_token, decode_token,
     create_password_reset_token,
 )
+from fastapi import Request
+from app.core.security import create_mfa_token
+from app.services import totp_service
 
 RESET_RESEND_COOLDOWN_SECONDS = 60
 
@@ -68,23 +71,21 @@ class AuthService:
 
         if not user or not verify_password(password, user.hashed_password):
             if user is not None:
-                user.failed_login_attempts += 1
-                if user.failed_login_attempts >= settings.max_failed_login_attempts:
-                    user.locked_until = datetime.now(timezone.utc) + timedelta(
-                        minutes=settings.lockout_duration_minutes
-                    )
-                    security_logger.warning(
-                        f"Account locked after {user.failed_login_attempts} failed attempts: {email}"
-                    )
-                else:
-                    security_logger.info(f"Failed login attempt for {email}")
-                self.repository.update(user)
+                self._register_failure(user, email)
             raise invalid_creds
+
+        if user.totp_enabled:
+            # Do NOT reset the failure counter yet: it is cleared only after the second
+            # factor succeeds, so an attacker who knows the password can't reset the
+            # lockout by logging in again between code guesses.
+            security_logger.info(f"Password accepted, 2FA required: {email}")
+            return {"mfa_required": True, "mfa_token": create_mfa_token(str(user.id))}
 
         user.failed_login_attempts = 0
         user.locked_until = None
         self.repository.update(user)
         security_logger.info(f"Successful login: {email}")
+        return self._issue_tokens(user)
 
         access_token = create_access_token(subject=str(user.id), role=user.role.value)
         raw_refresh, hashed_refresh, _expires_at = create_refresh_token(subject=str(user.id))
@@ -177,3 +178,67 @@ class AuthService:
         user.locked_until = None
         self.repository.update(user)
         security_logger.info(f"Password successfully reset for {user.email}")
+    def _register_failure(self, user: UserModel, who: str) -> None:
+        user.failed_login_attempts += 1
+        if user.failed_login_attempts >= settings.max_failed_login_attempts:
+            user.locked_until = datetime.now(timezone.utc) + timedelta(
+                minutes=settings.lockout_duration_minutes
+            )
+            security_logger.warning(f"Account locked after {user.failed_login_attempts} failed attempts: {who}")
+        else:
+            security_logger.info(f"Failed login attempt for {who}")
+        self.repository.update(user)
+
+    def _issue_tokens(self, user: UserModel) -> dict:
+        access_token = create_access_token(subject=str(user.id), role=user.role.value)
+        raw_refresh, hashed_refresh, _ = create_refresh_token(subject=str(user.id))
+        self.repository.set_refresh_token_hash(user, hashed_refresh)
+        return {"access_token": access_token, "refresh_token": raw_refresh}
+    def complete_2fa_login(self, mfa_token: str, code: str) -> dict:
+        invalid = HTTPException(status_code=401, detail="Invalid or expired code")
+        try:
+            payload = decode_token(mfa_token)
+            if payload.get("type") != "mfa":
+                raise invalid
+            user = self.repository.get_by_id(uuid.UUID(payload["sub"]))
+        except HTTPException:
+            raise
+        except Exception:
+            raise invalid
+        if user is None or not user.totp_enabled:
+            raise invalid
+
+        if user.locked_until is not None and _as_utc(user.locked_until) > datetime.now(timezone.utc):
+            raise HTTPException(status_code=status.HTTP_423_LOCKED,
+                                detail="Account temporarily locked due to repeated failed attempts. Try again later.")
+
+        if not (totp_service.verify_code(user, code) or totp_service.consume_recovery_code(user, code)):
+            self._register_failure(user, f"{user.email} (2FA)")
+            raise invalid
+
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        self.repository.update(user)   # also saves totp_last_step / used recovery code
+        security_logger.info(f"Successful login with 2FA: {user.email}")
+        return self._issue_tokens(user)
+
+    def begin_2fa_setup(self, user: UserModel) -> dict:
+        if user.totp_enabled:
+            raise HTTPException(status_code=400, detail="Two-factor authentication is already enabled")
+        secret = totp_service.new_secret()
+        user.totp_secret_encrypted = totp_service.encrypt(secret)
+        user.totp_last_step = None
+        self.repository.update(user)
+        security_logger.info(f"2FA setup started: {user.email}")
+        return {"secret": secret, "otpauth_uri": totp_service.provisioning_uri(secret, user.email)}
+
+    def enable_2fa(self, user: UserModel, code: str) -> list[str]:
+        if user.totp_enabled or not user.totp_secret_encrypted:
+            raise HTTPException(status_code=400, detail="Start 2FA setup first")
+        if not totp_service.verify_code(user, code):
+            raise HTTPException(status_code=400, detail="That code is not valid. Check your phone's clock and try again.")
+        user.totp_enabled = True
+        codes = totp_service.generate_recovery_codes(user)
+        self.repository.update(user)
+        security_logger.info(f"2FA enabled: {user.email}")
+        return codes

@@ -35,6 +35,7 @@ class UserRead(BaseModel):
     last_name: str
     email: EmailStr
     role: UserRole
+    totp_enabled: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -55,3 +56,22 @@ class PasswordResetRequest(BaseModel):
 class PasswordResetConfirm(BaseModel):
     token: str
     new_password: str = Field(min_length=8)
+    
+
+class MfaChallenge(BaseModel):
+    mfa_required: bool = True
+    mfa_token: str
+
+class TwoFactorVerify(BaseModel):
+    mfa_token: str
+    code: str = Field(min_length=6, max_length=20)   # 6-digit code or a recovery code
+
+class TwoFactorSetupResponse(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+class TwoFactorEnable(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+class RecoveryCodes(BaseModel):
+    recovery_codes: list[str]
